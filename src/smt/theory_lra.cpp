@@ -269,6 +269,13 @@ class theory_lra::imp {
             m_nla->set_relevant(is_relevant);
             m_nla->updt_params(ctx().get_params());
             m_nla->get_core().set_add_mul_def_hook([&](unsigned sz, lpvar const* vs) { return add_mul_def(sz, vs); });
+            m_nla->get_core().set_constraint_level([this](lp::constraint_index idx) -> unsigned {
+                if (idx >= m_constraint_sources.size()) return 0;
+                if (m_constraint_sources[idx] != inequality_source) return 0;
+                literal lit = m_inequalities[idx];
+                if (lit == null_literal) return 0;
+                return ctx().get_assign_level(lit.var());
+            });
         }
     }
 

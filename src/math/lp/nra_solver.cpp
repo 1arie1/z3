@@ -44,9 +44,10 @@ struct solver::imp {
     };
     map<unsigned_vector, unsigned, svector_hash<unsigned_hash>, eq> m_vars2mon;
     nla::core&                m_nla_core;
-    bool                       m_use_incremental = false;
+    unsigned                   m_incremental_mode = 0; // 0=off, 1=all-soft, 2=hard/soft split
     u_map<unsigned>            m_literal2ci;   // nlsat literal index → LP constraint index (for incremental mode)
     nlsat::literal_vector      m_assumptions;  // assumption literals for incremental check
+    svector<lp::constraint_index> m_hard_clause_cis; // constraint indices added as hard clauses (mode 2)
 
     imp(lp::lar_solver& s, reslimit& lim, params_ref const& p, nla::core& nla_core):
         lra(s),
@@ -188,10 +189,26 @@ struct solver::imp {
                 poly = poly * constant(den * coeff / denominators[v]);
                 p = p + poly;
             }
-            if (m_use_incremental)
-                add_constraint_as_assumption(p, ci, k);
-            else
+            switch (m_incremental_mode) {
+            case 0:
                 add_constraint(p, ci, k);
+                break;
+            case 1:
+                add_constraint_as_assumption(p, ci, k);
+                break;
+            default: {
+                // mode 2: hard/soft split by decision level
+                unsigned level = m_nla_core.get_constraint_level(ci);
+                if (level == 0) {
+                    nlsat::literal lit = make_literal(p, k);
+                    m_nlsat->mk_clause(1, &lit, nullptr);
+                    m_hard_clause_cis.push_back(ci);
+                } else {
+                    add_constraint_as_assumption(p, ci, k);
+                }
+                break;
+            }
+            }
             TRACE(nra, tout << "constraint " << ci << ": " << p << " " << k << " 0\n";
             lra.constraints().display(tout, ci) << "\n");
         }
@@ -244,9 +261,10 @@ struct solver::imp {
         reset();
 
         smt_params_helper p(m_params);
-        m_use_incremental = p.arith_nl_nra_incremental();
+        m_incremental_mode = p.arith_nl_nra_incremental();
         m_literal2ci.reset();
         m_assumptions.reset();
+        m_hard_clause_cis.reset();
 
 	    setup_solver_poly();
 
@@ -271,7 +289,7 @@ struct solver::imp {
         lbool r = l_undef;
         statistics& st = m_nla_core.lp_settings().stats().m_st;
         try {
-            if (m_use_incremental)
+            if (m_incremental_mode > 0)
                 r = m_nlsat->check(m_assumptions);
             else
                 r = m_nlsat->check();
@@ -314,11 +332,16 @@ struct solver::imp {
             break;
         case l_false: {
             lp::explanation ex;
-            if (m_use_incremental) {
+            if (m_incremental_mode > 0) {
                 // m_assumptions now contains only the used assumption literals
                 for (auto lit : m_assumptions) {
                     unsigned ci;
                     if (m_literal2ci.find(lit.index(), ci))
+                        ex.push_back(ci);
+                }
+                // mode 2: append all hard clause constraints to explanation
+                if (m_incremental_mode >= 2) {
+                    for (auto ci : m_hard_clause_cis)
                         ex.push_back(ci);
                 }
             } else {

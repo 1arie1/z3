@@ -74,6 +74,7 @@ class core {
     reslimit&                m_reslim;
     smt_params_helper        m_params;
     std::function<bool(lpvar)> m_relevant;
+    std::function<unsigned(lp::constraint_index)> m_constraint_level;
     vector<lemma>            m_lemmas;
     vector<ineq>             m_literals;
     vector<lp::equality>       m_equalities;
@@ -223,6 +224,8 @@ public:
 
     void set_relevant(std::function<bool(lpvar)>& is_relevant) { m_relevant = is_relevant; }
     bool is_relevant(lpvar v) const { return !m_relevant || m_relevant(v); }
+    void set_constraint_level(std::function<unsigned(lp::constraint_index)> const& f) { m_constraint_level = f; }
+    unsigned get_constraint_level(lp::constraint_index ci) const { return m_constraint_level ? m_constraint_level(ci) : 0; }
 
     void push();     
     void pop(unsigned n);
