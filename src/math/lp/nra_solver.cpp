@@ -212,6 +212,8 @@ struct solver::imp {
             TRACE(nra, tout << "constraint " << ci << ": " << p << " " << k << " 0\n";
             lra.constraints().display(tout, ci) << "\n");
         }
+        CTRACE(nla_solver, m_incremental_mode >= 2,
+            tout << "setup: " << m_hard_clause_cis.size() << " hard, " << m_assumptions.size() << " soft\n";);
         definitions.reset();
     }
 
