@@ -1405,12 +1405,14 @@ bool core::should_run_bounded_nlsat() {
 lbool core::bounded_nlsat() {
     params_ref p;
     lbool ret;
-    p.set_uint("max_conflicts", 100);
+    unsigned max_conflicts = m_params.arith_nl_nra_max_conflicts();
+    unsigned max_rlimit = m_params.arith_nl_nra_max_rlimit();
+    p.set_uint("max_conflicts", max_conflicts);
     m_nra.updt_params(p);
     {
         scoped_limits sl(m_reslim);
         sl.push_child(&m_nra_lim);
-        scoped_rlimit sr(m_nra_lim, 100000);
+        scoped_rlimit sr(m_nra_lim, max_rlimit);
         ret = m_nra.check();
     }
     p.set_uint("max_conflicts", lp_settings().m_max_conflicts);            
