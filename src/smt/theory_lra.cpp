@@ -3970,7 +3970,7 @@ public:
         cancel_eh<reslimit> eh(m.limit());
         scoped_timer timer(1000, &eh);
         bool result = l_true != nctx.check();
-        CTRACE(arith, !result, ctx().display_lemma_as_smt_problem(tout, m_core.size(), m_core.data(), m_eqs.size(), m_eqs.data(), false_literal););        
+        CTRACE(arith, !result, ctx().display_lemma_as_smt_problem(tout, m_core.size(), m_core.data(), m_eqs.size(), m_eqs.data(), false_literal););
         return result;
     }
 

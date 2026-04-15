@@ -2585,6 +2585,21 @@ static void tst_hard_soft_assumptions() {
         soft_lits.push_back(~mk_lt(s, p.get()));
     }
 
+    // Helper: extract hard core from get_core(), filtering to hard pointer range.
+    // After check(soft), soft pointers are dangling — only hard pointers are valid.
+    auto get_hard_core = [&](vector<nlsat::assumption, false>& hard_core) {
+        hard_core.reset();
+        vector<nlsat::assumption, false> all_deps;
+        s.get_core(all_deps);
+        for (auto dep : all_deps) {
+            nlsat::literal const* lp = (nlsat::literal const*)(dep);
+            if (hard_ptr <= lp && lp < hard_ptr + hard_sz)
+                hard_core.push_back(dep);
+        }
+    };
+
+    vector<nlsat::assumption, false> hard_core;
+
     // === Iteration 1: check with all soft assumptions ===
     nlsat::literal_vector soft_copy(soft_lits);
     std::cout << "Iter 1: check with " << soft_copy.size() << " soft + " << hard_sz << " hard\n";
@@ -2592,47 +2607,23 @@ static void tst_hard_soft_assumptions() {
     std::cout << "  result: " << res << "\n";
     VERIFY(res == l_false);
 
-    // soft_copy now has the used soft subset
-    std::cout << "  soft core: " << soft_copy.size() << " soft assumptions used\n";
-
-    // get_core() should return both hard and soft assumption pointers
-    vector<nlsat::assumption, false> full_core;
-    s.get_core(full_core);
-    unsigned n_hard_in_core = 0;
-    unsigned n_soft_in_core = 0;
-    nlsat::literal const* soft_ptr = soft_lits.data();
-    unsigned soft_sz = soft_lits.size();
-    for (auto dep : full_core) {
-        nlsat::literal const* lp = (nlsat::literal const*)(dep);
-        if (hard_ptr <= lp && lp < hard_ptr + hard_sz)
-            n_hard_in_core++;
-        else if (soft_ptr <= lp && lp < soft_ptr + soft_sz)
-            n_soft_in_core++;
-    }
-    std::cout << "  full core: " << n_hard_in_core << " hard + " << n_soft_in_core << " soft\n";
+    // Soft core: from returned soft_copy (the used subset)
+    std::cout << "  soft core: " << soft_copy.size() << " soft used\n";
+    // Hard core: from get_core(), filtered to hard range
+    get_hard_core(hard_core);
+    std::cout << "  hard core: " << hard_core.size() << " hard used\n";
 
     // === Iteration 2: check with NO soft assumptions ===
-    // Hard assumptions should persist. Problem should still be UNSAT.
     nlsat::literal_vector empty_soft;
     std::cout << "Iter 2: check with 0 soft + " << hard_sz << " hard (should persist)\n";
     res = s.check(empty_soft);
     std::cout << "  result: " << res << "\n";
     VERIFY(res == l_false);
 
-    // Full core should contain only hard assumptions now
-    full_core.reset();
-    s.get_core(full_core);
-    n_hard_in_core = 0;
-    n_soft_in_core = 0;
-    for (auto dep : full_core) {
-        nlsat::literal const* lp = (nlsat::literal const*)(dep);
-        if (hard_ptr <= lp && lp < hard_ptr + hard_sz)
-            n_hard_in_core++;
-        else if (soft_ptr <= lp && lp < soft_ptr + soft_sz)
-            n_soft_in_core++;
-    }
-    std::cout << "  full core: " << n_hard_in_core << " hard + " << n_soft_in_core << " soft\n";
-    VERIFY(n_soft_in_core == 0);
+    std::cout << "  soft core: " << empty_soft.size() << " soft used\n";
+    get_hard_core(hard_core);
+    std::cout << "  hard core: " << hard_core.size() << " hard used\n";
+    VERIFY(empty_soft.size() == 0);
 
     // === Iteration 3: check with partial soft ===
     nlsat::literal_vector partial_soft;
@@ -2642,19 +2633,9 @@ static void tst_hard_soft_assumptions() {
     std::cout << "  result: " << res << "\n";
     VERIFY(res == l_false);
 
-    full_core.reset();
-    s.get_core(full_core);
-    n_hard_in_core = 0;
-    n_soft_in_core = 0;
-    for (auto dep : full_core) {
-        nlsat::literal const* lp = (nlsat::literal const*)(dep);
-        if (hard_ptr <= lp && lp < hard_ptr + hard_sz)
-            n_hard_in_core++;
-        else if (soft_ptr <= lp && lp < soft_ptr + soft_sz)
-            n_soft_in_core++;
-    }
-    std::cout << "  full core: " << n_hard_in_core << " hard + " << n_soft_in_core << " soft\n";
-    std::cout << "  soft in returned assumptions: " << partial_soft.size() << "\n";
+    std::cout << "  soft core: " << partial_soft.size() << " soft used\n";
+    get_hard_core(hard_core);
+    std::cout << "  hard core: " << hard_core.size() << " hard used\n";
 
     std::cout << "=== tst_hard_soft_assumptions PASSED ===\n";
 }

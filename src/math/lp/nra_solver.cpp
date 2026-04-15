@@ -48,6 +48,7 @@ struct solver::imp {
     u_map<unsigned>            m_literal2ci;   // nlsat literal index → LP constraint index (all modes)
     nlsat::literal_vector      m_assumptions;  // soft assumption literals
     nlsat::literal_vector      m_hard_lits;    // hard assumption literals (persist across check(soft) calls)
+    vector<nlsat::assumption, false> m_hard_core; // reusable buffer for get_hard_core
 
     imp(lp::lar_solver& s, reslimit& lim, params_ref const& p, nla::core& nla_core):
         lra(s),
@@ -242,6 +243,23 @@ struct solver::imp {
 
 
 
+    // Extract hard assumption constraint indices from get_core().
+    // After check(soft), soft pointers are dangling — only hard pointers are valid.
+    void get_hard_core(lp::explanation& ex) {
+        m_hard_core.reset();
+        m_nlsat->get_core(m_hard_core);
+        nlsat::literal const* hard_ptr = m_hard_lits.data();
+        unsigned hard_sz = m_hard_lits.size();
+        for (auto dep : m_hard_core) {
+            nlsat::literal const* lp = (nlsat::literal const*)(dep);
+            if (hard_ptr <= lp && lp < hard_ptr + hard_sz) {
+                unsigned ci;
+                if (m_literal2ci.find(lp->index(), ci))
+                    ex.push_back(ci);
+            }
+        }
+    }
+
     polynomial::polynomial_ref sub(polynomial::polynomial *a, polynomial::polynomial *b) {
         return polynomial_ref(m_nlsat->pm().sub(a, b), m_nlsat->pm());
     }
@@ -343,15 +361,14 @@ struct solver::imp {
         case l_false: {
             lp::explanation ex;
             if (m_incremental_mode >= 2) {
-                // mode 2: get_core() returns both hard and soft assumption pointers
-                vector<nlsat::assumption, false> core;
-                m_nlsat->get_core(core);
-                for (auto dep : core) {
-                    nlsat::literal const* lp = (nlsat::literal const*)(dep);
+                // Soft core: from check(assumptions) return value (m_assumptions)
+                for (auto lit : m_assumptions) {
                     unsigned ci;
-                    if (m_literal2ci.find(lp->index(), ci))
+                    if (m_literal2ci.find(lit.index(), ci))
                         ex.push_back(ci);
                 }
+                // Hard core: from get_core(), filtered to hard pointer range
+                get_hard_core(ex);
             } else if (m_incremental_mode == 1) {
                 // mode 1: m_assumptions now contains only the used assumption literals
                 for (auto lit : m_assumptions) {
