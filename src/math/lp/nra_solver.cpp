@@ -44,9 +44,12 @@ struct solver::imp {
     };
     map<unsigned_vector, unsigned, svector_hash<unsigned_hash>, eq> m_vars2mon;
     nla::core&                m_nla_core;
-    
-    imp(lp::lar_solver& s, reslimit& lim, params_ref const& p, nla::core& nla_core): 
-        lra(s), 
+    bool                       m_use_incremental = false;
+    u_map<unsigned>            m_literal2ci;   // nlsat literal index → LP constraint index (for incremental mode)
+    nlsat::literal_vector      m_assumptions;  // assumption literals for incremental check
+
+    imp(lp::lar_solver& s, reslimit& lim, params_ref const& p, nla::core& nla_core):
+        lra(s),
         m_limit(lim),
         m_params(p),
         m_coi(nla_core),
@@ -185,7 +188,10 @@ struct solver::imp {
                 poly = poly * constant(den * coeff / denominators[v]);
                 p = p + poly;
             }
-            add_constraint(p, ci, k);
+            if (m_use_incremental)
+                add_constraint_as_assumption(p, ci, k);
+            else
+                add_constraint(p, ci, k);
             TRACE(nra, tout << "constraint " << ci << ": " << p << " " << k << " 0\n";
             lra.constraints().display(tout, ci) << "\n");
         }
@@ -236,9 +242,11 @@ struct solver::imp {
     lbool check() {
         SASSERT(need_check());
         reset();
-        vector<nlsat::assumption, false> core;        
-        
+
         smt_params_helper p(m_params);
+        m_use_incremental = p.arith_nl_nra_incremental();
+        m_literal2ci.reset();
+        m_assumptions.reset();
 
 	    setup_solver_poly();
 
@@ -248,7 +256,7 @@ struct solver::imp {
             static unsigned id = 0;
             std::stringstream strm;
 
-#ifndef SINGLE_THREAD            
+#ifndef SINGLE_THREAD
             std::thread::id this_id = std::this_thread::get_id();
             strm << "nla_" << this_id << "." << (++id) << ".smt2";
 #else
@@ -263,7 +271,10 @@ struct solver::imp {
         lbool r = l_undef;
         statistics& st = m_nla_core.lp_settings().stats().m_st;
         try {
-            r = m_nlsat->check();
+            if (m_use_incremental)
+                r = m_nlsat->check(m_assumptions);
+            else
+                r = m_nlsat->check();
         }
         catch (z3_exception&) {
             if (m_limit.is_canceled()) {
@@ -303,13 +314,22 @@ struct solver::imp {
             break;
         case l_false: {
             lp::explanation ex;
-            m_nlsat->get_core(core);
-            nla::lemma_builder lemma(m_nla_core, __FUNCTION__);
-            for (auto c : core) {
-                unsigned idx = static_cast<unsigned>(static_cast<imp *>(c) - this);
-                ex.push_back(idx);
+            if (m_use_incremental) {
+                // m_assumptions now contains only the used assumption literals
+                for (auto lit : m_assumptions) {
+                    unsigned ci;
+                    if (m_literal2ci.find(lit.index(), ci))
+                        ex.push_back(ci);
+                }
+            } else {
+                vector<nlsat::assumption, false> core;
+                m_nlsat->get_core(core);
+                for (auto c : core) {
+                    unsigned idx = static_cast<unsigned>(static_cast<imp *>(c) - this);
+                    ex.push_back(idx);
+                }
             }
-
+            nla::lemma_builder lemma(m_nla_core, __FUNCTION__);
             lemma &= ex;
             m_nla_core.set_use_nra_model(true);
             TRACE(nra, tout << lemma << "\n");
@@ -584,20 +604,33 @@ struct solver::imp {
         m_nlsat->mk_clause(1, &lit, a);
     }
 
-    nlsat::literal add_constraint(polynomial::polynomial *p, unsigned idx, lp::lconstraint_kind k) {
+    // Create an nlsat literal for an LP constraint polynomial, without registering a clause.
+    nlsat::literal make_literal(polynomial::polynomial *p, lp::lconstraint_kind k) {
         polynomial::polynomial *ps[1] = {p};
         bool is_even[1] = {false};
-        nlsat::literal lit;
-        nlsat::assumption a = this + idx;
         switch (k) {
-        case lp::lconstraint_kind::LE: lit = ~m_nlsat->mk_ineq_literal(nlsat::atom::kind::GT, 1, ps, is_even); break;
-        case lp::lconstraint_kind::GE: lit = ~m_nlsat->mk_ineq_literal(nlsat::atom::kind::LT, 1, ps, is_even); break;
-        case lp::lconstraint_kind::LT: lit = m_nlsat->mk_ineq_literal(nlsat::atom::kind::LT, 1, ps, is_even); break;
-        case lp::lconstraint_kind::GT: lit = m_nlsat->mk_ineq_literal(nlsat::atom::kind::GT, 1, ps, is_even); break;
-        case lp::lconstraint_kind::EQ: lit = m_nlsat->mk_ineq_literal(nlsat::atom::kind::EQ, 1, ps, is_even); break;
-        default: UNREACHABLE();  // unreachable
+        case lp::lconstraint_kind::LE: return ~m_nlsat->mk_ineq_literal(nlsat::atom::kind::GT, 1, ps, is_even);
+        case lp::lconstraint_kind::GE: return ~m_nlsat->mk_ineq_literal(nlsat::atom::kind::LT, 1, ps, is_even);
+        case lp::lconstraint_kind::LT: return m_nlsat->mk_ineq_literal(nlsat::atom::kind::LT, 1, ps, is_even);
+        case lp::lconstraint_kind::GT: return m_nlsat->mk_ineq_literal(nlsat::atom::kind::GT, 1, ps, is_even);
+        case lp::lconstraint_kind::EQ: return m_nlsat->mk_ineq_literal(nlsat::atom::kind::EQ, 1, ps, is_even);
+        default: UNREACHABLE(); return nlsat::null_literal;
         }
+    }
+
+    // Create literal and register as a unit clause with assumption tag (original non-incremental path).
+    nlsat::literal add_constraint(polynomial::polynomial *p, unsigned idx, lp::lconstraint_kind k) {
+        nlsat::literal lit = make_literal(p, k);
+        nlsat::assumption a = this + idx;
         m_nlsat->mk_clause(1, &lit, a);
+        return lit;
+    }
+
+    // Create literal and add to assumptions vector (incremental path).
+    nlsat::literal add_constraint_as_assumption(polynomial::polynomial *p, unsigned idx, lp::lconstraint_kind k) {
+        nlsat::literal lit = make_literal(p, k);
+        m_literal2ci.insert(lit.index(), idx);
+        m_assumptions.push_back(lit);
         return lit;
     }
 
