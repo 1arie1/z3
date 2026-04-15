@@ -384,6 +384,9 @@ struct solver::imp {
                     ex.push_back(idx);
                 }
             }
+            TRACE(nla_solver, tout << "nlsat core: " << ex.size() << " constraints"
+                << (m_incremental_mode >= 2 ? " (soft=" + std::to_string(m_assumptions.size()) + " hard=" + std::to_string(ex.size() - m_assumptions.size()) + ")" : "")
+                << "\n";);
             nla::lemma_builder lemma(m_nla_core, __FUNCTION__);
             lemma &= ex;
             m_nla_core.set_use_nra_model(true);
