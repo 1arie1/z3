@@ -45,9 +45,9 @@ struct solver::imp {
     map<unsigned_vector, unsigned, svector_hash<unsigned_hash>, eq> m_vars2mon;
     nla::core&                m_nla_core;
     unsigned                   m_incremental_mode = 0; // 0=off, 1=all-soft, 2=hard/soft split
-    u_map<unsigned>            m_literal2ci;   // nlsat literal index → LP constraint index (for incremental mode)
-    nlsat::literal_vector      m_assumptions;  // assumption literals for incremental check
-    svector<lp::constraint_index> m_hard_clause_cis; // constraint indices added as hard clauses (mode 2)
+    u_map<unsigned>            m_literal2ci;   // nlsat literal index → LP constraint index (all modes)
+    nlsat::literal_vector      m_assumptions;  // soft assumption literals
+    nlsat::literal_vector      m_hard_lits;    // hard assumption literals (persist across check(soft) calls)
 
     imp(lp::lar_solver& s, reslimit& lim, params_ref const& p, nla::core& nla_core):
         lra(s),
@@ -201,8 +201,8 @@ struct solver::imp {
                 unsigned level = m_nla_core.get_constraint_level(ci);
                 if (level == 0) {
                     nlsat::literal lit = make_literal(p, k);
-                    m_nlsat->mk_clause(1, &lit, nullptr);
-                    m_hard_clause_cis.push_back(ci);
+                    m_hard_lits.push_back(lit);
+                    m_literal2ci.insert(lit.index(), ci);
                 } else {
                     add_constraint_as_assumption(p, ci, k);
                 }
@@ -212,8 +212,16 @@ struct solver::imp {
             TRACE(nra, tout << "constraint " << ci << ": " << p << " " << k << " 0\n";
             lra.constraints().display(tout, ci) << "\n");
         }
+        // Register hard clauses after loop so m_hard_lits won't reallocate
+        if (m_incremental_mode >= 2) {
+            nlsat::literal const* hard_ptr = m_hard_lits.data();
+            for (unsigned i = 0; i < m_hard_lits.size(); ++i) {
+                nlsat::literal lit = m_hard_lits[i];
+                m_nlsat->mk_clause(1, &lit, (nlsat::assumption)(hard_ptr + i));
+            }
+        }
         CTRACE(nla_solver, m_incremental_mode >= 2,
-            tout << "setup: " << m_hard_clause_cis.size() << " hard, " << m_assumptions.size() << " soft\n";);
+            tout << "setup: " << m_hard_lits.size() << " hard, " << m_assumptions.size() << " soft\n";);
         definitions.reset();
     }
 
@@ -266,7 +274,7 @@ struct solver::imp {
         m_incremental_mode = p.arith_nl_nra_incremental();
         m_literal2ci.reset();
         m_assumptions.reset();
-        m_hard_clause_cis.reset();
+        m_hard_lits.reset();
 
 	    setup_solver_poly();
 
@@ -334,16 +342,21 @@ struct solver::imp {
             break;
         case l_false: {
             lp::explanation ex;
-            if (m_incremental_mode > 0) {
-                // m_assumptions now contains only the used assumption literals
+            if (m_incremental_mode >= 2) {
+                // mode 2: get_core() returns both hard and soft assumption pointers
+                vector<nlsat::assumption, false> core;
+                m_nlsat->get_core(core);
+                for (auto dep : core) {
+                    nlsat::literal const* lp = (nlsat::literal const*)(dep);
+                    unsigned ci;
+                    if (m_literal2ci.find(lp->index(), ci))
+                        ex.push_back(ci);
+                }
+            } else if (m_incremental_mode == 1) {
+                // mode 1: m_assumptions now contains only the used assumption literals
                 for (auto lit : m_assumptions) {
                     unsigned ci;
                     if (m_literal2ci.find(lit.index(), ci))
-                        ex.push_back(ci);
-                }
-                // mode 2: append all hard clause constraints to explanation
-                if (m_incremental_mode >= 2) {
-                    for (auto ci : m_hard_clause_cis)
                         ex.push_back(ci);
                 }
             } else {

@@ -2479,7 +2479,189 @@ static void tst_25() {
     std::cout << "=== END tst_25 ===\n\n";
 }
 
+// Test two-tier assumptions: hard assumptions persist across check(soft) calls,
+// soft assumptions are cleaned. get_core() returns both.
+// Models the NLA scenario: structural constraints are hard, LP-derived are soft.
+// We iterate: check with all soft, then drop some soft and re-check.
+// At the end, get a precise core over both hard and soft.
+static void tst_hard_soft_assumptions() {
+    std::cout << "=== tst_hard_soft_assumptions ===\n";
+    params_ref ps;
+    reslimit rlim;
+    nlsat::solver s(rlim, ps, false);
+    nlsat::pmanager& pm = s.pm();
+
+    // Variables
+    nlsat::var a = s.mk_var(false);
+    nlsat::var b = s.mk_var(false);
+    nlsat::var q = s.mk_var(false);
+    nlsat::var r = s.mk_var(false);
+    nlsat::var c = s.mk_var(false);
+
+    polynomial_ref _a(pm), _b(pm), _q(pm), _r(pm), _c(pm);
+    _a = pm.mk_polynomial(a);
+    _b = pm.mk_polynomial(b);
+    _q = pm.mk_polynomial(q);
+    _r = pm.mk_polynomial(r);
+    _c = pm.mk_polynomial(c);
+
+    // === Hard assumptions (structural constraints) ===
+    // These persist across check(soft) calls.
+    // We register them via mk_clause with assumption pointers from a persistent vector.
+    nlsat::literal_vector hard_lits;
+
+    // a - b*q - r <= 0
+    hard_lits.push_back(~mk_gt(s, (_a - _b*_q - _r)));
+    // a - b*q - r >= 0
+    hard_lits.push_back(~mk_lt(s, (_a - _b*_q - _r)));
+    // r >= 0
+    hard_lits.push_back(~mk_lt(s, _r.get()));
+    // b >= 1
+    {
+        polynomial_ref p(pm);
+        p = _b - 1;
+        hard_lits.push_back(~mk_lt(s, p.get()));
+    }
+    // b - r >= 1 (r < b)
+    {
+        polynomial_ref p(pm);
+        p = _b - _r - 1;
+        hard_lits.push_back(~mk_lt(s, p.get()));
+    }
+    // c - q - 1 <= 0
+    {
+        polynomial_ref p(pm);
+        p = _c - _q - 1;
+        hard_lits.push_back(~mk_gt(s, p.get()));
+    }
+    // c - q - 1 >= 0
+    {
+        polynomial_ref p(pm);
+        p = _c - _q - 1;
+        hard_lits.push_back(~mk_lt(s, p.get()));
+    }
+    // r > 0
+    hard_lits.push_back(mk_gt(s, _r.get()));
+    // contradiction target: b*c - a - b + r != 0
+    {
+        polynomial_ref p(pm);
+        p = _b*_c - _a - _b + _r;
+        nlsat::literal gt = mk_gt(s, p.get());
+        nlsat::literal lt = mk_lt(s, p.get());
+        // This needs to be a disjunction — use a 2-literal clause
+        // For simplicity, add gt as hard (forces b*c - a - b + r > 0)
+        // Together with structural constraints this is UNSAT
+        hard_lits.push_back(gt);
+    }
+
+    // Register hard assumptions using their addresses in hard_lits
+    nlsat::literal const* hard_ptr = hard_lits.data();
+    unsigned hard_sz = hard_lits.size();
+    for (unsigned i = 0; i < hard_sz; ++i) {
+        s.mk_clause(1, const_cast<nlsat::literal*>(hard_ptr + i), (nlsat::assumption)(hard_ptr + i));
+    }
+    std::cout << "Registered " << hard_sz << " hard assumptions\n";
+
+    // === Soft assumptions (LP-derived bounds) ===
+    nlsat::literal_vector soft_lits;
+    // b >= 5
+    {
+        polynomial_ref p(pm);
+        p = _b - 5;
+        soft_lits.push_back(~mk_lt(s, p.get()));
+    }
+    // q >= 3
+    {
+        polynomial_ref p(pm);
+        p = _q - 3;
+        soft_lits.push_back(~mk_lt(s, p.get()));
+    }
+    // a <= 100
+    {
+        polynomial_ref _100(pm);
+        _100 = pm.mk_const(rational(100));
+        polynomial_ref p(pm);
+        p = _100 - _a;
+        soft_lits.push_back(~mk_lt(s, p.get()));
+    }
+
+    // === Iteration 1: check with all soft assumptions ===
+    nlsat::literal_vector soft_copy(soft_lits);
+    std::cout << "Iter 1: check with " << soft_copy.size() << " soft + " << hard_sz << " hard\n";
+    lbool res = s.check(soft_copy);
+    std::cout << "  result: " << res << "\n";
+    VERIFY(res == l_false);
+
+    // soft_copy now has the used soft subset
+    std::cout << "  soft core: " << soft_copy.size() << " soft assumptions used\n";
+
+    // get_core() should return both hard and soft assumption pointers
+    vector<nlsat::assumption, false> full_core;
+    s.get_core(full_core);
+    unsigned n_hard_in_core = 0;
+    unsigned n_soft_in_core = 0;
+    nlsat::literal const* soft_ptr = soft_lits.data();
+    unsigned soft_sz = soft_lits.size();
+    for (auto dep : full_core) {
+        nlsat::literal const* lp = (nlsat::literal const*)(dep);
+        if (hard_ptr <= lp && lp < hard_ptr + hard_sz)
+            n_hard_in_core++;
+        else if (soft_ptr <= lp && lp < soft_ptr + soft_sz)
+            n_soft_in_core++;
+    }
+    std::cout << "  full core: " << n_hard_in_core << " hard + " << n_soft_in_core << " soft\n";
+
+    // === Iteration 2: check with NO soft assumptions ===
+    // Hard assumptions should persist. Problem should still be UNSAT.
+    nlsat::literal_vector empty_soft;
+    std::cout << "Iter 2: check with 0 soft + " << hard_sz << " hard (should persist)\n";
+    res = s.check(empty_soft);
+    std::cout << "  result: " << res << "\n";
+    VERIFY(res == l_false);
+
+    // Full core should contain only hard assumptions now
+    full_core.reset();
+    s.get_core(full_core);
+    n_hard_in_core = 0;
+    n_soft_in_core = 0;
+    for (auto dep : full_core) {
+        nlsat::literal const* lp = (nlsat::literal const*)(dep);
+        if (hard_ptr <= lp && lp < hard_ptr + hard_sz)
+            n_hard_in_core++;
+        else if (soft_ptr <= lp && lp < soft_ptr + soft_sz)
+            n_soft_in_core++;
+    }
+    std::cout << "  full core: " << n_hard_in_core << " hard + " << n_soft_in_core << " soft\n";
+    VERIFY(n_soft_in_core == 0);
+
+    // === Iteration 3: check with partial soft ===
+    nlsat::literal_vector partial_soft;
+    partial_soft.push_back(soft_lits[1]); // q >= 3 only
+    std::cout << "Iter 3: check with 1 soft + " << hard_sz << " hard\n";
+    res = s.check(partial_soft);
+    std::cout << "  result: " << res << "\n";
+    VERIFY(res == l_false);
+
+    full_core.reset();
+    s.get_core(full_core);
+    n_hard_in_core = 0;
+    n_soft_in_core = 0;
+    for (auto dep : full_core) {
+        nlsat::literal const* lp = (nlsat::literal const*)(dep);
+        if (hard_ptr <= lp && lp < hard_ptr + hard_sz)
+            n_hard_in_core++;
+        else if (soft_ptr <= lp && lp < soft_ptr + soft_sz)
+            n_soft_in_core++;
+    }
+    std::cout << "  full core: " << n_hard_in_core << " hard + " << n_soft_in_core << " soft\n";
+    std::cout << "  soft in returned assumptions: " << partial_soft.size() << "\n";
+
+    std::cout << "=== tst_hard_soft_assumptions PASSED ===\n";
+}
+
 void tst_nlsat() {
+    tst_hard_soft_assumptions();
+    std::cout << "------------------\n";
     tst_22();
     std::cout << "------------------\n";    
     tst_25();
