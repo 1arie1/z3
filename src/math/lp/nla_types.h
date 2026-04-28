@@ -35,6 +35,7 @@ namespace nla {
         lp::lconstraint_kind m_cmp;
         lp::lar_term         m_term;
         rational             m_rs;
+        lbool                m_phase_hint = l_undef;
     public:
         ineq(lp::lconstraint_kind cmp, const lp::lar_term& term, const rational& rs) : m_cmp(cmp), m_term(term), m_rs(rs) {}
         ineq(const lp::lar_term& term, lp::lconstraint_kind cmp, int i) : m_cmp(cmp), m_term(term), m_rs(rational(i)) {}
@@ -46,6 +47,13 @@ namespace nla {
         const lp::lar_term& term() const { return m_term; };
         lp::lconstraint_kind cmp() const { return m_cmp;  };
         const rational& rs() const { return m_rs; };
+        // Optional preferred SAT polarity for the literal this ineq becomes.
+        // The emitter sets this when it knows which polarity advances the
+        // search (e.g., pseudo-linear marks each snapshot disequality with
+        // l_false so BCP propagates the consequence equality with a clean
+        // antecedent chain). l_undef = no hint.
+        ineq& prefer(lbool v) { m_phase_hint = v; return *this; }
+        lbool phase_hint() const { return m_phase_hint; }
     };
     
     class lemma {

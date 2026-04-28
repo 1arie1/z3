@@ -1579,7 +1579,10 @@ void core::refine_pseudo_linear(monic const& m) {
             auto lb = lra.get_lower_bound(v);
             auto ub = lra.get_upper_bound(v);
             if (ub - lb <= rational(4)) {
-                lemma |= ineq(v, llc::NE, val(v));
+                // Snapshot disequality v != val(v): hint SAT to assign FALSE
+                // so BCP through the clause derives the consequence equality
+                // with a clean antecedent chain back to the snapshot literal.
+                lemma |= ineq(v, llc::NE, val(v)).prefer(l_false);
                 prod *= val(v);
                 continue;
             }

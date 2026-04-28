@@ -2136,6 +2136,16 @@ public:
             tout << "\n";);
         for (auto const& ineq : m_lemma.ineqs()) {
             auto lit = mk_literal(ineq);
+            // Apply emitter-supplied phase hint, if any. l_true => prefer lit
+            // assigned TRUE on next decision; l_false => prefer FALSE so BCP
+            // through the learned clause forces the consequence with a clean
+            // antecedent for conflict analysis. l_undef leaves phase to the
+            // standard cache.
+            switch (ineq.phase_hint()) {
+            case l_true:  ctx().force_phase(lit);  break;
+            case l_false: ctx().force_phase(~lit); break;
+            default:                               break;
+            }
             core.push_back(~lit);
         }
         set_conflict_or_lemma(core, false);

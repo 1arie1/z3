@@ -94,8 +94,15 @@ void order::order_lemma_on_binomial_sign(const monic& xy, lpvar x, lpvar y, int 
         return;
     
     lemma_builder lemma(c(), __FUNCTION__);
-    lemma |= ineq(y,                                   sy == 1      ? llc::LE : llc::GE, 0); // negate sy
-    lemma |= ineq(x,                                   sy*sign == 1 ? llc::GT : llc::LT , val(x)); 
+    // Hint SAT to keep the snapshot literals FALSE — at LP's current model both
+    // (y ≷ 0)-negated and (x ≷ val(x))-strict are FALSE. Forcing them FALSE
+    // means BCP through the clause forces the bilinear conclusion TRUE, which
+    // gives LP a derived bound on the monomial column without perturbing
+    // val(x) or val(y). Reduces the cascade where SAT picks one of the
+    // snapshot literals TRUE, asserts a bound contradicting current LP, and
+    // forces a pivot that re-fires ord-binom at a new val(x).
+    lemma |= ineq(y,                                   sy == 1      ? llc::LE : llc::GE, 0).prefer(l_false); // negate sy
+    lemma |= ineq(x,                                   sy*sign == 1 ? llc::GT : llc::LT , val(x)).prefer(l_false);
     lemma |= ineq(lp::lar_term(xy.var(), - val(x), y), sign == 1    ? llc::LE : llc::GE, 0);
 }
 
